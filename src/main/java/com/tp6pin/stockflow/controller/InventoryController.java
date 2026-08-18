@@ -17,6 +17,7 @@ import com.tp6pin.stockflow.dto.request.InventoryAdjustmentRequest;
 import com.tp6pin.stockflow.dto.request.InventoryInboundRequest;
 import com.tp6pin.stockflow.dto.request.InventoryReleaseRequest;
 import com.tp6pin.stockflow.dto.request.InventoryReservationRequest;
+import com.tp6pin.stockflow.dto.request.InventoryShipmentRequest;
 import com.tp6pin.stockflow.dto.response.ApiResponse;
 import com.tp6pin.stockflow.dto.response.InventoryBatchResponse;
 import com.tp6pin.stockflow.dto.response.InventoryReservationResponse;
@@ -123,6 +124,28 @@ public class InventoryController {
         return ResponseEntity.ok(
             ApiResponse.success(
                 "預留庫存釋放成功",
+                response
+            )
+        );
+    }
+    
+    /**
+     * 將指定來源已預留的庫存實際出庫。
+     */
+    @PostMapping("/shipments")
+    public ResponseEntity<
+            ApiResponse<InventoryBatchResponse>
+        > shipInventory(
+            @Valid
+            @RequestBody
+            InventoryShipmentRequest request
+    ) {
+        InventoryBatchResponse response =
+            inventoryService.shipInventory(request);
+
+        return ResponseEntity.ok(
+            ApiResponse.success(
+                "庫存出庫成功",
                 response
             )
         );

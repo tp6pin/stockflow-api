@@ -18,6 +18,7 @@ import com.tp6pin.stockflow.dto.request.InventoryAdjustmentRequest;
 import com.tp6pin.stockflow.dto.request.InventoryInboundRequest;
 import com.tp6pin.stockflow.dto.request.InventoryReleaseRequest;
 import com.tp6pin.stockflow.dto.request.InventoryReservationRequest;
+import com.tp6pin.stockflow.dto.request.InventoryShipmentRequest;
 import com.tp6pin.stockflow.dto.response.InventoryBatchResponse;
 import com.tp6pin.stockflow.dto.response.InventoryReservationBatchResponse;
 import com.tp6pin.stockflow.dto.response.InventoryReservationResponse;
@@ -336,6 +337,90 @@ public class InventoryService {
             inventoryBatchRepository.save(batch);
 
         createReleaseTransaction(
+            savedBatch,
+            request.getQuantity(),
+            referenceType,
+            request.getReferenceId(),
+            note
+        );
+
+        return InventoryBatchResponse.from(savedBatch);
+    }
+    
+    /**
+     * 將指定來源已預留的庫存實際出庫。
+     *
+     * 實際出庫會同時減少：
+     * 1. quantityOnHand
+     * 2. quantityReserved
+     */
+    @Transactional
+    public InventoryBatchResponse shipInventory(
+            InventoryShipmentRequest request
+    ) {
+        String referenceType =
+            normalizeReferenceType(
+                request.getReferenceType()
+            );
+
+        String note =
+            normalizeNullableText(request.getNote());
+
+        /*
+         * 鎖定庫存批次，避免多個出庫請求
+         * 同時扣除相同批次的庫存。
+         */
+        InventoryBatch batch =
+            inventoryBatchRepository
+                .findByIdForUpdate(request.getBatchId())
+                .orElseThrow(() ->
+                    new ResourceNotFoundException(
+                        "找不到 ID 為 "
+                            + request.getBatchId()
+                            + " 的庫存批次"
+                    )
+                );
+
+        /*
+         * 計算此來源在目前批次尚未釋放、
+         * 也尚未實際出庫的預留數量。
+         */
+        long sourceReservedQuantity =
+            inventoryTransactionRepository
+                .sumReservedChangeByReference(
+                    batch.getId(),
+                    referenceType,
+                    request.getReferenceId()
+                );
+
+        validateShipmentQuantity(
+            batch,
+            request.getQuantity(),
+            sourceReservedQuantity,
+            referenceType,
+            request.getReferenceId()
+        );
+
+        int quantityOnHandAfter =
+            batch.getQuantityOnHand()
+                - request.getQuantity();
+
+        int quantityReservedAfter =
+            batch.getQuantityReserved()
+                - request.getQuantity();
+
+        batch.setQuantityOnHand(
+            quantityOnHandAfter
+        );
+
+        batch.setQuantityReserved(
+            quantityReservedAfter
+        );
+
+        InventoryBatch savedBatch =
+            inventoryBatchRepository.save(batch);
+
+        createShipmentTransaction(
             savedBatch,
             request.getQuantity(),
             referenceType,
@@ -807,6 +892,67 @@ public class InventoryService {
     }
     
     /**
+     * 建立 SHIPMENT 庫存異動紀錄。
+     */
+    private void createShipmentTransaction(
+            InventoryBatch batch,
+            Integer shipmentQuantity,
+            String referenceType,
+            Long referenceId,
+            String note
+    ) {
+        InventoryTransaction transaction =
+            new InventoryTransaction();
+
+        transaction.setProduct(batch.getProduct());
+        transaction.setBatch(batch);
+
+        transaction.setTransactionType(
+            InventoryTransactionType.SHIPMENT
+        );
+
+        /*
+         * 實際出庫會減少帳面庫存。
+         */
+        transaction.setOnHandChange(
+            -shipmentQuantity
+        );
+
+        /*
+         * 已預留的庫存完成出庫，
+         * 因此同時減少預留數量。
+         */
+        transaction.setReservedChange(
+            -shipmentQuantity
+        );
+
+        transaction.setOnHandAfter(
+            batch.getQuantityOnHand()
+        );
+
+        transaction.setReservedAfter(
+            batch.getQuantityReserved()
+        );
+
+        transaction.setReferenceType(
+            referenceType
+        );
+
+        transaction.setReferenceId(
+            referenceId
+        );
+
+        transaction.setNote(note);
+
+        /*
+         * JWT 尚未完成，目前不設定操作人。
+         */
+        transaction.setCreatedBy(null);
+
+        inventoryTransactionRepository.save(transaction);
+    }
+    
+    /**
      * 驗證既有批次資料是否一致。
      */
     private void validateExistingBatch(
@@ -960,6 +1106,54 @@ public class InventoryService {
         }
     }
 
+    /**
+     * 驗證指定來源是否有足夠的預留庫存可供出庫。
+     */
+    private void validateShipmentQuantity(
+            InventoryBatch batch,
+            Integer shipmentQuantity,
+            long sourceReservedQuantity,
+            String referenceType,
+            Long referenceId
+    ) {
+        if (sourceReservedQuantity <= 0) {
+            throw new BusinessException(
+                ErrorCode.DATA_CONFLICT,
+                "指定來源在此批次沒有可出庫的預留庫存："
+                    + referenceType
+                    + " / "
+                    + referenceId
+            );
+        }
+
+        if (shipmentQuantity > sourceReservedQuantity) {
+            throw new BusinessException(
+                ErrorCode.DATA_CONFLICT,
+                "出庫數量不可超過此來源的剩餘預留數量，"
+                    + "目前可出庫數量為 "
+                    + sourceReservedQuantity
+            );
+        }
+
+        if (shipmentQuantity > batch.getQuantityReserved()) {
+            throw new BusinessException(
+                ErrorCode.DATA_CONFLICT,
+                "出庫數量不可超過批次目前的總預留數量，"
+                    + "批次目前預留數量為 "
+                    + batch.getQuantityReserved()
+            );
+        }
+
+        if (shipmentQuantity > batch.getQuantityOnHand()) {
+            throw new BusinessException(
+                ErrorCode.INSUFFICIENT_STOCK,
+                "出庫數量不可超過批次目前的實際庫存，"
+                    + "批次目前實際庫存為 "
+                    + batch.getQuantityOnHand()
+            );
+        }
+    }
+    
     /**
      * 查詢並驗證啟用中的商品。
      */
