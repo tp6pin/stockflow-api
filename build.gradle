@@ -1,0 +1,55 @@
+plugins {
+	id 'java'
+	id 'org.springframework.boot' version '4.1.0'
+	id 'io.spring.dependency-management' version '1.1.7'
+}
+
+group = 'com.tp6pin'
+version = '0.0.1-SNAPSHOT'
+
+java {
+	sourceCompatibility = '17'
+   targetCompatibility = '17'
+}
+
+repositories {
+	mavenCentral()
+}
+
+dependencies {
+    // Web API
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+
+    // Spring Data JPA
+    implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+
+    // Spring Security
+    implementation 'org.springframework.boot:spring-boot-starter-security'
+
+    // Request DTO 資料驗證
+    implementation 'org.springframework.boot:spring-boot-starter-validation'
+
+    // Flyway 資料庫版本管理
+    implementation 'org.springframework.boot:spring-boot-starter-flyway'
+runtimeOnly 'org.flywaydb:flyway-mysql'
+
+    // MySQL Driver
+    runtimeOnly 'com.mysql:mysql-connector-j'
+
+    // Lombok
+    compileOnly 'org.projectlombok:lombok'
+    annotationProcessor 'org.projectlombok:lombok'
+
+    // JWT
+    implementation 'io.jsonwebtoken:jjwt-api:0.11.5'
+    runtimeOnly 'io.jsonwebtoken:jjwt-impl:0.11.5'
+    runtimeOnly 'io.jsonwebtoken:jjwt-jackson:0.11.5'
+
+    // Test
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.named('test') {
+	useJUnitPlatform()
+}
