@@ -13,6 +13,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.tp6pin.stockflow.dto.request.InventoryAdjustmentRequest;
 import com.tp6pin.stockflow.dto.request.InventoryInboundRequest;
 import com.tp6pin.stockflow.dto.response.ApiResponse;
 import com.tp6pin.stockflow.dto.response.InventoryBatchResponse;
@@ -56,6 +57,28 @@ public class InventoryController {
                     response
                 )
             );
+    }
+
+    /**
+     * 手動調整庫存。
+     */
+    @PostMapping("/adjustments")
+    public ResponseEntity<
+            ApiResponse<InventoryBatchResponse>
+        > adjustInventory(
+            @Valid
+            @RequestBody
+            InventoryAdjustmentRequest request
+    ) {
+        InventoryBatchResponse response =
+            inventoryService.adjustInventory(request);
+
+        return ResponseEntity.ok(
+            ApiResponse.success(
+                "庫存調整成功",
+                response
+            )
+        );
     }
 
     /**

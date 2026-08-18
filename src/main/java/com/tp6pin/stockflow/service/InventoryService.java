@@ -13,6 +13,7 @@ import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.tp6pin.stockflow.dto.request.InventoryAdjustmentRequest;
 import com.tp6pin.stockflow.dto.request.InventoryInboundRequest;
 import com.tp6pin.stockflow.dto.response.InventoryBatchResponse;
 import com.tp6pin.stockflow.dto.response.InventoryTransactionResponse;
@@ -38,6 +39,9 @@ public class InventoryService {
 
     private static final String INBOUND_REFERENCE_TYPE =
         "INBOUND";
+
+    private static final String ADJUSTMENT_REFERENCE_TYPE =
+        "ADJUSTMENT";
 
     private final InventoryBatchRepository
         inventoryBatchRepository;
@@ -107,6 +111,57 @@ public class InventoryService {
             savedBatch,
             request.getQuantity(),
             normalizedNote
+        );
+
+        return InventoryBatchResponse.from(savedBatch);
+    }
+
+    /**
+     * 手動調整庫存。
+     *
+     * quantityChange：
+     * 正數代表增加庫存。
+     * 負數代表減少庫存。
+     */
+    @Transactional
+    public InventoryBatchResponse adjustInventory(
+            InventoryAdjustmentRequest request
+    ) {
+        validateAdjustmentQuantity(
+            request.getQuantityChange()
+        );
+
+        InventoryBatch batch =
+            inventoryBatchRepository
+                .findByIdForUpdate(request.getBatchId())
+                .orElseThrow(() ->
+                    new ResourceNotFoundException(
+                        "找不到 ID 為 "
+                            + request.getBatchId()
+                            + " 的庫存批次"
+                    )
+                );
+
+        int quantityOnHandAfter =
+            calculateAdjustedQuantity(
+                batch.getQuantityOnHand(),
+                request.getQuantityChange()
+            );
+
+        validateAdjustedQuantity(
+            quantityOnHandAfter,
+            batch.getQuantityReserved()
+        );
+
+        batch.setQuantityOnHand(quantityOnHandAfter);
+
+        InventoryBatch savedBatch =
+            inventoryBatchRepository.save(batch);
+
+        createAdjustmentTransaction(
+            savedBatch,
+            request.getQuantityChange(),
+            normalizeRequiredText(request.getReason())
         );
 
         return InventoryBatchResponse.from(savedBatch);
@@ -298,6 +353,62 @@ public class InventoryService {
     }
 
     /**
+     * 驗證庫存調整數量。
+     */
+    private void validateAdjustmentQuantity(
+            Integer quantityChange
+    ) {
+        if (quantityChange == 0) {
+            throw new BusinessException(
+                ErrorCode.INVALID_INPUT,
+                "庫存調整數量不可為 0"
+            );
+        }
+    }
+
+    /**
+     * 計算庫存調整後的實際庫存。
+     */
+    private int calculateAdjustedQuantity(
+            Integer quantityOnHand,
+            Integer quantityChange
+    ) {
+        try {
+            return Math.addExact(
+                quantityOnHand,
+                quantityChange
+            );
+        } catch (ArithmeticException exception) {
+            throw new BusinessException(
+                ErrorCode.DATA_CONFLICT,
+                "調整後的庫存數量超過系統可儲存範圍"
+            );
+        }
+    }
+
+    /**
+     * 驗證庫存調整後的數量。
+     */
+    private void validateAdjustedQuantity(
+            int quantityOnHandAfter,
+            Integer quantityReserved
+    ) {
+        if (quantityOnHandAfter < 0) {
+            throw new BusinessException(
+                ErrorCode.INSUFFICIENT_STOCK,
+                "調整後的實際庫存不可小於 0"
+            );
+        }
+
+        if (quantityOnHandAfter < quantityReserved) {
+            throw new BusinessException(
+                ErrorCode.DATA_CONFLICT,
+                "調整後的實際庫存不可小於預留庫存"
+            );
+        }
+    }
+
+    /**
      * 建立 INBOUND 庫存異動紀錄。
      */
     private void createInboundTransaction(
@@ -326,6 +437,44 @@ public class InventoryService {
         );
         transaction.setReferenceId(null);
         transaction.setNote(note);
+
+        /*
+         * JWT 尚未完成，目前不設定操作人。
+         */
+        transaction.setCreatedBy(null);
+
+        inventoryTransactionRepository.save(transaction);
+    }
+
+    /**
+     * 建立 ADJUSTMENT 庫存異動紀錄。
+     */
+    private void createAdjustmentTransaction(
+            InventoryBatch batch,
+            Integer quantityChange,
+            String reason
+    ) {
+        InventoryTransaction transaction =
+            new InventoryTransaction();
+
+        transaction.setProduct(batch.getProduct());
+        transaction.setBatch(batch);
+        transaction.setTransactionType(
+            InventoryTransactionType.ADJUSTMENT
+        );
+        transaction.setOnHandChange(quantityChange);
+        transaction.setReservedChange(0);
+        transaction.setOnHandAfter(
+            batch.getQuantityOnHand()
+        );
+        transaction.setReservedAfter(
+            batch.getQuantityReserved()
+        );
+        transaction.setReferenceType(
+            ADJUSTMENT_REFERENCE_TYPE
+        );
+        transaction.setReferenceId(null);
+        transaction.setNote(reason);
 
         /*
          * JWT 尚未完成，目前不設定操作人。

@@ -184,4 +184,18 @@ public interface InventoryBatchRepository
         @Param("startDate") LocalDate startDate,
         @Param("endDate") LocalDate endDate
     );
+    
+    /**
+     * 新增依批次 ID 悲觀鎖定的方法
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @EntityGraph(attributePaths = {"product", "supplier"})
+    @Query("""
+            SELECT batch
+            FROM InventoryBatch batch
+            WHERE batch.id = :batchId
+            """)
+    Optional<InventoryBatch> findByIdForUpdate(
+            @Param("batchId") Long batchId
+    );
 }
