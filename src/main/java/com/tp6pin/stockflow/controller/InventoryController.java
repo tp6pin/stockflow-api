@@ -15,8 +15,11 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.tp6pin.stockflow.dto.request.InventoryAdjustmentRequest;
 import com.tp6pin.stockflow.dto.request.InventoryInboundRequest;
+import com.tp6pin.stockflow.dto.request.InventoryReleaseRequest;
+import com.tp6pin.stockflow.dto.request.InventoryReservationRequest;
 import com.tp6pin.stockflow.dto.response.ApiResponse;
 import com.tp6pin.stockflow.dto.response.InventoryBatchResponse;
+import com.tp6pin.stockflow.dto.response.InventoryReservationResponse;
 import com.tp6pin.stockflow.dto.response.InventoryTransactionResponse;
 import com.tp6pin.stockflow.dto.response.PageResponse;
 import com.tp6pin.stockflow.service.InventoryService;
@@ -81,6 +84,50 @@ public class InventoryController {
         );
     }
 
+    /**
+     * 使用 FEFO 規則預留商品庫存。
+     */
+    @PostMapping("/reservations")
+    public ResponseEntity<
+            ApiResponse<InventoryReservationResponse>
+        > reserveInventory(
+            @Valid
+            @RequestBody
+            InventoryReservationRequest request
+    ) {
+        InventoryReservationResponse response =
+            inventoryService.reserveInventory(request);
+
+        return ResponseEntity.ok(
+            ApiResponse.success(
+                "庫存預留成功",
+                response
+            )
+        );
+    }
+    
+    /**
+     * 釋放指定來源在指定批次的預留庫存。
+     */
+    @PostMapping("/reservations/release")
+    public ResponseEntity<
+            ApiResponse<InventoryBatchResponse>
+        > releaseInventory(
+            @Valid
+            @RequestBody
+            InventoryReleaseRequest request
+    ) {
+        InventoryBatchResponse response =
+            inventoryService.releaseInventory(request);
+
+        return ResponseEntity.ok(
+            ApiResponse.success(
+                "預留庫存釋放成功",
+                response
+            )
+        );
+    }
+    
     /**
      * 分頁與條件查詢庫存批次。
      */

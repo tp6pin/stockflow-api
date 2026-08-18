@@ -126,4 +126,30 @@ public interface InventoryTransactionRepository
         InventoryTransactionType transactionType,
         Pageable pageable
     );
+    
+    /**
+     * 計算指定來源在指定批次的剩餘預留數量。
+     *
+     * reservedChange：
+     * RESERVE 為正數。
+     * RELEASE 為負數。
+     *
+     * 將所有 reservedChange 加總後，
+     * 就是該來源目前尚未釋放的預留數量。
+     */
+    @Query("""
+        SELECT COALESCE(
+            SUM(transaction.reservedChange),
+            0
+        )
+        FROM InventoryTransaction transaction
+        WHERE transaction.batch.id = :batchId
+          AND transaction.referenceType = :referenceType
+          AND transaction.referenceId = :referenceId
+        """)
+    Long sumReservedChangeByReference(
+        @Param("batchId") Long batchId,
+        @Param("referenceType") String referenceType,
+        @Param("referenceId") Long referenceId
+    );
 }

@@ -1,6 +1,7 @@
 package com.tp6pin.stockflow.service;
 
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
@@ -15,7 +16,11 @@ import org.springframework.transaction.annotation.Transactional;
 
 import com.tp6pin.stockflow.dto.request.InventoryAdjustmentRequest;
 import com.tp6pin.stockflow.dto.request.InventoryInboundRequest;
+import com.tp6pin.stockflow.dto.request.InventoryReleaseRequest;
+import com.tp6pin.stockflow.dto.request.InventoryReservationRequest;
 import com.tp6pin.stockflow.dto.response.InventoryBatchResponse;
+import com.tp6pin.stockflow.dto.response.InventoryReservationBatchResponse;
+import com.tp6pin.stockflow.dto.response.InventoryReservationResponse;
 import com.tp6pin.stockflow.dto.response.InventoryTransactionResponse;
 import com.tp6pin.stockflow.dto.response.PageResponse;
 import com.tp6pin.stockflow.entity.InventoryBatch;
@@ -167,6 +172,180 @@ public class InventoryService {
         return InventoryBatchResponse.from(savedBatch);
     }
 
+    /**
+     * 使用 FEFO 規則預留商品庫存。
+     *
+     * FEFO：
+     * 優先使用有效期限最早的庫存批次。
+     */
+    @Transactional
+    public InventoryReservationResponse reserveInventory(
+            InventoryReservationRequest request
+    ) {
+        Product product =
+            findActiveProductForReservation(
+                request.getProductId()
+            );
+
+        String referenceType =
+            normalizeReferenceType(
+                request.getReferenceType()
+            );
+
+        String note =
+            normalizeNullableText(request.getNote());
+
+        /*
+         * 查詢可使用的批次並加上悲觀寫入鎖。
+         *
+         * Repository 已按照：
+         * 1. expirationDate
+         * 2. receivedDate
+         * 3. id
+         * 排序。
+         */
+        List<InventoryBatch> availableBatches =
+            inventoryBatchRepository
+                .findAvailableBatchesForUpdate(
+                    product.getId(),
+                    LocalDate.now()
+                );
+
+        validateSufficientAvailableStock(
+            availableBatches,
+            request.getQuantity()
+        );
+
+        List<InventoryReservationBatchResponse>
+            reservationBatches = new ArrayList<>();
+
+        int remainingQuantity = request.getQuantity();
+
+        for (InventoryBatch batch : availableBatches) {
+            if (remainingQuantity == 0) {
+                break;
+            }
+
+            int quantityAvailable =
+                batch.getQuantityOnHand()
+                    - batch.getQuantityReserved();
+
+            int quantityToReserve =
+                Math.min(
+                    quantityAvailable,
+                    remainingQuantity
+                );
+
+            int quantityReservedAfter =
+                batch.getQuantityReserved()
+                    + quantityToReserve;
+
+            batch.setQuantityReserved(
+                quantityReservedAfter
+            );
+
+            InventoryBatch savedBatch =
+                inventoryBatchRepository.save(batch);
+
+            createReserveTransaction(
+                savedBatch,
+                quantityToReserve,
+                referenceType,
+                request.getReferenceId(),
+                note
+            );
+
+            reservationBatches.add(
+                InventoryReservationBatchResponse.from(
+                    savedBatch,
+                    quantityToReserve
+                )
+            );
+
+            remainingQuantity -= quantityToReserve;
+        }
+
+        return InventoryReservationResponse.of(
+            product,
+            request.getQuantity(),
+            request.getQuantity() - remainingQuantity,
+            referenceType,
+            request.getReferenceId(),
+            reservationBatches
+        );
+    }
+    
+    /**
+     * 釋放指定來源在指定批次的預留庫存。
+     */
+    @Transactional
+    public InventoryBatchResponse releaseInventory(
+            InventoryReleaseRequest request
+    ) {
+        String referenceType =
+            normalizeReferenceType(
+                request.getReferenceType()
+            );
+
+        String note =
+            normalizeNullableText(request.getNote());
+
+        /*
+         * 先鎖定批次，避免兩個釋放請求同時修改
+         * quantityReserved。
+         */
+        InventoryBatch batch =
+            inventoryBatchRepository
+                .findByIdForUpdate(request.getBatchId())
+                .orElseThrow(() ->
+                    new ResourceNotFoundException(
+                        "找不到 ID 為 "
+                            + request.getBatchId()
+                            + " 的庫存批次"
+                    )
+                );
+
+        /*
+         * 查詢這個來源在此批次尚未釋放的預留量。
+         */
+        long sourceReservedQuantity =
+            inventoryTransactionRepository
+                .sumReservedChangeByReference(
+                    batch.getId(),
+                    referenceType,
+                    request.getReferenceId()
+                );
+
+        validateReleaseQuantity(
+            batch,
+            request.getQuantity(),
+            sourceReservedQuantity,
+            referenceType,
+            request.getReferenceId()
+        );
+
+        int quantityReservedAfter =
+            batch.getQuantityReserved()
+                - request.getQuantity();
+
+        batch.setQuantityReserved(
+            quantityReservedAfter
+        );
+
+        InventoryBatch savedBatch =
+            inventoryBatchRepository.save(batch);
+
+        createReleaseTransaction(
+            savedBatch,
+            request.getQuantity(),
+            referenceType,
+            request.getReferenceId(),
+            note
+        );
+
+        return InventoryBatchResponse.from(savedBatch);
+    }
+    
     /**
      * 使用 ID 查詢單一庫存批次。
      */
@@ -367,6 +546,32 @@ public class InventoryService {
     }
 
     /**
+     * 驗證所有可用批次的庫存總數是否足夠。
+     */
+    private void validateSufficientAvailableStock(
+            List<InventoryBatch> availableBatches,
+            Integer requestedQuantity
+    ) {
+        long totalAvailableQuantity =
+            availableBatches.stream()
+                .mapToLong(batch ->
+                    (long) batch.getQuantityOnHand()
+                        - batch.getQuantityReserved()
+                )
+                .sum();
+
+        if (totalAvailableQuantity < requestedQuantity) {
+            throw new BusinessException(
+                ErrorCode.INSUFFICIENT_STOCK,
+                "可用庫存不足，目前可用數量為 "
+                    + totalAvailableQuantity
+                    + "，要求預留數量為 "
+                    + requestedQuantity
+            );
+        }
+    }
+    
+    /**
      * 計算庫存調整後的實際庫存。
      */
     private int calculateAdjustedQuantity(
@@ -485,6 +690,123 @@ public class InventoryService {
     }
 
     /**
+     * 建立 RESERVE 庫存異動紀錄。
+     */
+    private void createReserveTransaction(
+            InventoryBatch batch,
+            Integer reservedQuantity,
+            String referenceType,
+            Long referenceId,
+            String note
+    ) {
+        InventoryTransaction transaction =
+            new InventoryTransaction();
+
+        transaction.setProduct(batch.getProduct());
+        transaction.setBatch(batch);
+        transaction.setTransactionType(
+            InventoryTransactionType.RESERVE
+        );
+
+        /*
+         * 預留不會改變實際庫存，
+         * 因此 onHandChange 為 0。
+         */
+        transaction.setOnHandChange(0);
+
+        /*
+         * 增加預留庫存，因此為正數。
+         */
+        transaction.setReservedChange(
+            reservedQuantity
+        );
+
+        transaction.setOnHandAfter(
+            batch.getQuantityOnHand()
+        );
+
+        transaction.setReservedAfter(
+            batch.getQuantityReserved()
+        );
+
+        transaction.setReferenceType(
+            referenceType
+        );
+
+        transaction.setReferenceId(
+            referenceId
+        );
+
+        transaction.setNote(note);
+
+        /*
+         * JWT 尚未完成，目前不設定操作人。
+         */
+        transaction.setCreatedBy(null);
+
+        inventoryTransactionRepository.save(transaction);
+    }
+    
+    /**
+     * 建立 RELEASE 庫存異動紀錄。
+     */
+    private void createReleaseTransaction(
+            InventoryBatch batch,
+            Integer releasedQuantity,
+            String referenceType,
+            Long referenceId,
+            String note
+    ) {
+        InventoryTransaction transaction =
+            new InventoryTransaction();
+
+        transaction.setProduct(batch.getProduct());
+        transaction.setBatch(batch);
+
+        transaction.setTransactionType(
+            InventoryTransactionType.RELEASE
+        );
+
+        /*
+         * 釋放預留不影響實際庫存。
+         */
+        transaction.setOnHandChange(0);
+
+        /*
+         * 釋放會減少預留數量，
+         * 因此 reservedChange 必須是負數。
+         */
+        transaction.setReservedChange(
+            -releasedQuantity
+        );
+
+        transaction.setOnHandAfter(
+            batch.getQuantityOnHand()
+        );
+
+        transaction.setReservedAfter(
+            batch.getQuantityReserved()
+        );
+
+        transaction.setReferenceType(
+            referenceType
+        );
+
+        transaction.setReferenceId(
+            referenceId
+        );
+
+        transaction.setNote(note);
+
+        /*
+         * JWT 尚未完成，目前不設定操作人。
+         */
+        transaction.setCreatedBy(null);
+
+        inventoryTransactionRepository.save(transaction);
+    }
+    
+    /**
      * 驗證既有批次資料是否一致。
      */
     private void validateExistingBatch(
@@ -591,6 +913,52 @@ public class InventoryService {
             );
         }
     }
+    
+    /**
+     * 驗證指定來源可以釋放的預留數量。
+     */
+    private void validateReleaseQuantity(
+            InventoryBatch batch,
+            Integer releaseQuantity,
+            long sourceReservedQuantity,
+            String referenceType,
+            Long referenceId
+    ) {
+        if (sourceReservedQuantity <= 0) {
+            throw new BusinessException(
+                ErrorCode.DATA_CONFLICT,
+                "指定來源在此批次沒有可釋放的預留庫存："
+                    + referenceType
+                    + " / "
+                    + referenceId
+            );
+        }
+
+        if (releaseQuantity > sourceReservedQuantity) {
+            throw new BusinessException(
+                ErrorCode.DATA_CONFLICT,
+                "釋放數量不可超過此來源的剩餘預留數量，"
+                    + "目前可釋放數量為 "
+                    + sourceReservedQuantity
+            );
+        }
+
+        /*
+         * 正常情況下，來源預留量一定不會超過
+         * 批次的總預留量。
+         *
+         * 此檢查可以避免資料異常時，
+         * quantityReserved 被扣成負數。
+         */
+        if (releaseQuantity > batch.getQuantityReserved()) {
+            throw new BusinessException(
+                ErrorCode.DATA_CONFLICT,
+                "釋放數量不可超過批次目前的總預留數量，"
+                    + "批次目前預留數量為 "
+                    + batch.getQuantityReserved()
+            );
+        }
+    }
 
     /**
      * 查詢並驗證啟用中的商品。
@@ -616,6 +984,32 @@ public class InventoryService {
         return product;
     }
 
+    /**
+     * 查詢並驗證可以進行庫存預留的商品。
+     */
+    private Product findActiveProductForReservation(
+            Long productId
+    ) {
+        Product product =
+            productRepository.findById(productId)
+                .orElseThrow(() ->
+                    new ResourceNotFoundException(
+                        "找不到 ID 為 "
+                            + productId
+                            + " 的商品"
+                    )
+                );
+
+        if (!Boolean.TRUE.equals(product.getActive())) {
+            throw new BusinessException(
+                ErrorCode.DATA_CONFLICT,
+                "指定的商品已停用，無法預留庫存"
+            );
+        }
+
+        return product;
+    }
+    
     /**
      * 查詢並驗證啟用中的供應商。
      */
@@ -687,5 +1081,17 @@ public class InventoryService {
         }
 
         return value.trim();
+    }
+    
+    /**
+     * 統一參考來源類型格式。
+     *
+     * 例如：
+     * order_item → ORDER_ITEM
+     */
+    private String normalizeReferenceType(String value) {
+        return value
+            .trim()
+            .toUpperCase(Locale.ROOT);
     }
 }
