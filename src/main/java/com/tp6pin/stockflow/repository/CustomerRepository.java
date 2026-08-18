@@ -1,5 +1,6 @@
 package com.tp6pin.stockflow.repository;
 
+import java.util.List;
 import java.util.Optional;
 
 import org.springframework.data.domain.Page;
@@ -8,7 +9,8 @@ import org.springframework.data.jpa.repository.JpaRepository;
 
 import com.tp6pin.stockflow.entity.Customer;
 
-public interface CustomerRepository extends JpaRepository<Customer, Long> {
+public interface CustomerRepository
+        extends JpaRepository<Customer, Long> {
 
     Optional<Customer> findByCustomerCode(String customerCode);
 
@@ -22,4 +24,6 @@ public interface CustomerRepository extends JpaRepository<Customer, Long> {
         String companyName,
         Pageable pageable
     );
+
+    List<Customer> findAllByActiveTrueOrderByCompanyNameAsc();
 }

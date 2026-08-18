@@ -1,5 +1,6 @@
 package com.tp6pin.stockflow.repository;
 
+import java.util.List;
 import java.util.Optional;
 
 import org.springframework.data.domain.Page;
@@ -8,7 +9,8 @@ import org.springframework.data.jpa.repository.JpaRepository;
 
 import com.tp6pin.stockflow.entity.Supplier;
 
-public interface SupplierRepository extends JpaRepository<Supplier, Long> {
+public interface SupplierRepository
+        extends JpaRepository<Supplier, Long> {
 
     Optional<Supplier> findBySupplierCode(String supplierCode);
 
@@ -22,4 +24,6 @@ public interface SupplierRepository extends JpaRepository<Supplier, Long> {
         String companyName,
         Pageable pageable
     );
+
+    List<Supplier> findAllByActiveTrueOrderByCompanyNameAsc();
 }
