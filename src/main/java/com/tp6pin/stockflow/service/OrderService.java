@@ -5,12 +5,14 @@ import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.tp6pin.stockflow.dto.request.InventoryReleaseRequest;
 import com.tp6pin.stockflow.dto.request.InventoryReservationRequest;
 import com.tp6pin.stockflow.dto.request.OrderCreateRequest;
 import com.tp6pin.stockflow.dto.request.OrderItemCreateRequest;
@@ -25,9 +27,11 @@ import com.tp6pin.stockflow.entity.Order;
 import com.tp6pin.stockflow.entity.OrderItem;
 import com.tp6pin.stockflow.entity.OrderItemAllocation;
 import com.tp6pin.stockflow.entity.Product;
+import com.tp6pin.stockflow.entity.Shipment;
 import com.tp6pin.stockflow.entity.User;
 import com.tp6pin.stockflow.enums.AllocationStatus;
 import com.tp6pin.stockflow.enums.OrderStatus;
+import com.tp6pin.stockflow.enums.ShipmentStatus;
 import com.tp6pin.stockflow.exception.BusinessException;
 import com.tp6pin.stockflow.exception.ErrorCode;
 import com.tp6pin.stockflow.exception.ResourceNotFoundException;
@@ -36,6 +40,7 @@ import com.tp6pin.stockflow.repository.InventoryBatchRepository;
 import com.tp6pin.stockflow.repository.OrderItemAllocationRepository;
 import com.tp6pin.stockflow.repository.OrderRepository;
 import com.tp6pin.stockflow.repository.ProductRepository;
+import com.tp6pin.stockflow.repository.ShipmentRepository;
 import com.tp6pin.stockflow.repository.UserRepository;
 
 import lombok.RequiredArgsConstructor;
@@ -60,7 +65,11 @@ public class OrderService {
     private final UserRepository userRepository;
     private final InventoryBatchRepository inventoryBatchRepository;
     private final OrderItemAllocationRepository orderItemAllocationRepository;
+    private final ShipmentRepository shipmentRepository;
     private final InventoryService inventoryService;
+
+
+
     /**
      * 建立草稿訂單。
      *
@@ -338,6 +347,131 @@ public class OrderService {
 
         order.setStatus(OrderStatus.CONFIRMED);
         order.setConfirmedAt(LocalDateTime.now());
+
+        Order savedOrder =
+            orderRepository.save(order);
+
+        return OrderResponse.from(savedOrder);
+    }
+    
+    /**
+     * 取消訂單。
+     *
+     * 可取消狀態：
+     * 1. DRAFT：直接取消
+     * 2. CONFIRMED：釋放預留庫存後取消
+     * 3. PROCESSING：取消 PREPARING 出貨單，
+     *    並釋放預留庫存
+     *
+     * 不可取消狀態：
+     * 1. SHIPPED：商品已實際出庫
+     * 2. COMPLETED：訂單已完成
+     * 3. CANCELLED：訂單已取消
+     *
+     * 因為使用 @Transactional，
+     * 任何一筆庫存釋放失敗時，整個取消流程都會回滾。
+     */
+    @Transactional
+    public OrderResponse cancelOrder(Long orderId) {
+
+        /*
+         * 鎖定訂單，避免取消、出貨或其他狀態操作
+         * 同時修改同一張訂單。
+         */
+        Order order = orderRepository
+            .findByIdForUpdate(orderId)
+            .orElseThrow(() ->
+                new ResourceNotFoundException(
+                    "找不到 ID 為 "
+                        + orderId
+                        + " 的訂單"
+                )
+            );
+
+        OrderStatus currentStatus =
+            order.getStatus();
+
+        /*
+         * 已出貨後不能使用一般取消流程，
+         * 未來若需要處理，應另外建立退貨流程。
+         */
+        if (currentStatus == OrderStatus.SHIPPED) {
+            throw new BusinessException(
+                ErrorCode.INVALID_STATUS_TRANSITION,
+                "已出貨的訂單不可取消，請使用退貨流程"
+            );
+        }
+
+        /*
+         * 已完成的訂單不可取消。
+         */
+        if (currentStatus == OrderStatus.COMPLETED) {
+            throw new BusinessException(
+                ErrorCode.INVALID_STATUS_TRANSITION,
+                "已完成的訂單不可取消"
+            );
+        }
+
+        /*
+         * 避免重複取消。
+         */
+        if (currentStatus == OrderStatus.CANCELLED) {
+            throw new BusinessException(
+                ErrorCode.INVALID_STATUS_TRANSITION,
+                "訂單已經取消"
+            );
+        }
+
+        /*
+         * 只有 DRAFT、CONFIRMED、PROCESSING
+         * 可以進入取消流程。
+         */
+        if (
+            currentStatus != OrderStatus.DRAFT
+                && currentStatus != OrderStatus.CONFIRMED
+                && currentStatus != OrderStatus.PROCESSING
+        ) {
+            throw new BusinessException(
+                ErrorCode.INVALID_STATUS_TRANSITION,
+                "目前訂單狀態不可取消："
+                    + currentStatus
+            );
+        }
+
+        LocalDateTime cancelledAt =
+            LocalDateTime.now();
+
+        /*
+         * PROCESSING 代表已建立 PREPARING 出貨單，
+         * 因此必須先將出貨單取消。
+         */
+        if (currentStatus == OrderStatus.PROCESSING) {
+            cancelPreparingShipment(
+                orderId
+            );
+        }
+
+        /*
+         * CONFIRMED 與 PROCESSING 都已經預留庫存，
+         * 因此取消時必須釋放所有 ACTIVE Allocation。
+         *
+         * DRAFT 尚未預留庫存，不需要執行。
+         */
+        if (
+            currentStatus == OrderStatus.CONFIRMED
+                || currentStatus == OrderStatus.PROCESSING
+        ) {
+            releaseActiveAllocations(
+                orderId,
+                cancelledAt
+            );
+        }
+
+        /*
+         * 最後更新訂單狀態與取消時間。
+         */
+        order.setStatus(OrderStatus.CANCELLED);
+        order.setCancelledAt(cancelledAt);
 
         Order savedOrder =
             orderRepository.save(order);
@@ -714,5 +848,134 @@ public class OrderService {
                 allocation
             );
         }
+    }
+    
+    /**
+     * 取消處理中的訂單所建立的備貨出貨單。
+     */
+    private void cancelPreparingShipment(Long orderId) {
+
+        Shipment shipment = shipmentRepository
+            .findByOrder_Id(orderId)
+            .orElseThrow(() ->
+                new BusinessException(
+                    ErrorCode.DATA_CONFLICT,
+                    "PROCESSING 訂單找不到對應的出貨單"
+                )
+            );
+
+        /*
+         * PROCESSING 階段的出貨單應該是 PREPARING。
+         *
+         * 如果已經是 SHIPPED，代表商品已實際出庫，
+         * 不可再使用取消訂單流程。
+         */
+        if (
+            shipment.getStatus()
+                != ShipmentStatus.PREPARING
+        ) {
+            throw new BusinessException(
+                ErrorCode.INVALID_STATUS_TRANSITION,
+                "只有 PREPARING 狀態的出貨單可以取消"
+            );
+        }
+
+        shipment.setStatus(
+            ShipmentStatus.CANCELLED
+        );
+
+        shipmentRepository.save(shipment);
+    }
+    
+    /**
+     * 釋放訂單所有仍為 ACTIVE 的庫存配置。
+     */
+    private void releaseActiveAllocations(
+            Long orderId,
+            LocalDateTime releasedAt
+    ) {
+        List<OrderItemAllocation> allocations =
+            orderItemAllocationRepository
+                .findAllByOrderItem_Order_IdAndStatus(
+                    orderId,
+                    AllocationStatus.ACTIVE
+                );
+
+        /*
+         * CONFIRMED 或 PROCESSING 正常情況下
+         * 應該至少存在一筆 ACTIVE Allocation。
+         */
+        if (allocations.isEmpty()) {
+            throw new BusinessException(
+                ErrorCode.DATA_CONFLICT,
+                "訂單沒有可釋放的有效庫存配置"
+            );
+        }
+
+        for (OrderItemAllocation allocation
+                : allocations) {
+
+            InventoryReleaseRequest releaseRequest =
+                new InventoryReleaseRequest();
+
+            /*
+             * 指定訂單確認時透過 FEFO
+             * 所預留的庫存批次。
+             */
+            releaseRequest.setBatchId(
+                allocation.getBatch().getId()
+            );
+
+            /*
+             * 釋放此 Allocation 的全部預留數量。
+             */
+            releaseRequest.setQuantity(
+                allocation.getAllocatedQuantity()
+            );
+
+            /*
+             * 必須與預留時的 referenceType 相同。
+             */
+            releaseRequest.setReferenceType(
+                "ORDER_ITEM"
+            );
+
+            /*
+             * 必須與預留時的 referenceId 相同。
+             */
+            releaseRequest.setReferenceId(
+                allocation.getOrderItem().getId()
+            );
+
+            releaseRequest.setNote(
+                "取消訂單："
+                    + allocation
+                        .getOrderItem()
+                        .getOrder()
+                        .getOrderNumber()
+            );
+
+            /*
+             * 釋放預留庫存：
+             * quantityReserved 減少，
+             * quantityOnHand 不變，
+             * 並新增 RELEASE 異動紀錄。
+             */
+            inventoryService.releaseInventory(
+                releaseRequest
+            );
+
+            /*
+             * 庫存釋放成功後更新 Allocation。
+             */
+            allocation.setStatus(
+                AllocationStatus.RELEASED
+            );
+            allocation.setReleasedAt(releasedAt);
+        }
+
+        orderItemAllocationRepository.saveAll(
+            allocations
+        );
     }
 }

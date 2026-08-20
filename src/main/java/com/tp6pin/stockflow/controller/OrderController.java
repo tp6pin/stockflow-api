@@ -225,4 +225,33 @@ public class OrderController {
             )
         );
     }
+    
+    /**
+     * 取消訂單。
+     *
+     * 可取消狀態：
+     * 1. DRAFT：直接取消
+     * 2. CONFIRMED：釋放預留庫存後取消
+     * 3. PROCESSING：取消備貨中的出貨單，
+     *    並釋放預留庫存
+     *
+     * SHIPPED、COMPLETED 與 CANCELLED
+     * 不允許執行取消。
+     */
+    @PostMapping("/{orderId}/cancel")
+    public ResponseEntity<ApiResponse<OrderResponse>> cancelOrder(
+            @PathVariable("orderId")
+            @Positive(message = "訂單 ID 必須大於 0")
+            Long orderId
+    ) {
+        OrderResponse response =
+            orderService.cancelOrder(orderId);
+
+        return ResponseEntity.ok(
+            ApiResponse.success(
+                "訂單取消成功",
+                response
+            )
+        );
+    }
 }
