@@ -200,21 +200,14 @@ public class ShipmentService {
             Long shipmentId,
             ShipmentShipRequest request
     ) {
-        /*
-         * 使用悲觀鎖取得出貨單，
-         * 防止同一張出貨單同時被重複出貨。
-         */
-        Shipment shipment = shipmentRepository
-            .findByIdForUpdate(shipmentId)
-            .orElseThrow(() ->
-                new ResourceNotFoundException(
-                    "找不到 ID 為 "
-                        + shipmentId
-                        + " 的出貨單"
-                )
-            );
+    	/*
+    	 * 固定按照 Order → Shipment 的順序加鎖，
+    	 * 防止出貨與取消同時修改相同資料。
+    	 */
+    	Shipment shipment =
+    	    findShipmentWithOrderLock(shipmentId);
 
-        Order order = shipment.getOrder();
+    	Order order = shipment.getOrder();
 
         /*
          * 只有備貨中的出貨單可以實際出貨。
@@ -405,20 +398,13 @@ public class ShipmentService {
     public ShipmentResponse completeDelivery(
             Long shipmentId
     ) {
-        /*
-         * 鎖定出貨單，避免相同出貨單被同時重複完成。
-         */
-        Shipment shipment = shipmentRepository
-            .findByIdForUpdate(shipmentId)
-            .orElseThrow(() ->
-                new ResourceNotFoundException(
-                    "找不到 ID 為 "
-                        + shipmentId
-                        + " 的出貨單"
-                )
-            );
+    	/*
+    	 * 固定按照 Order → Shipment 的順序加鎖。
+    	 */
+    	Shipment shipment =
+    	    findShipmentWithOrderLock(shipmentId);
 
-        Order order = shipment.getOrder();
+    	Order order = shipment.getOrder();
 
         /*
          * 只有已出貨的出貨單才能完成配送。
@@ -496,6 +482,64 @@ public class ShipmentService {
         }
     }
 
+    /**
+     * 按照固定順序鎖定訂單與出貨單。
+     *
+     * 鎖定順序：
+     * 1. 先查詢 Shipment 所屬的 orderId
+     * 2. 鎖定 Order
+     * 3. 鎖定 Shipment
+     *
+     * 取消、出貨與配送完成都使用相同順序，
+     * 避免不同交易互相等待而產生死鎖。
+     */
+    private Shipment findShipmentWithOrderLock(
+            Long shipmentId
+    ) {
+        /*
+         * 此查詢只取得 orderId，不會鎖定資料。
+         */
+        Long orderId = shipmentRepository
+            .findOrderIdByShipmentId(shipmentId)
+            .orElseThrow(() ->
+                new ResourceNotFoundException(
+                    "找不到 ID 為 "
+                        + shipmentId
+                        + " 的出貨單"
+                )
+            );
+
+        /*
+         * 第一個悲觀鎖：Order。
+         */
+        orderRepository
+            .findByIdForUpdate(orderId)
+            .orElseThrow(() ->
+                new ResourceNotFoundException(
+                    "找不到 ID 為 "
+                        + orderId
+                        + " 的訂單"
+                )
+            );
+
+        /*
+         * 第二個悲觀鎖：Shipment。
+         *
+         * 等待取得鎖後會重新讀取最新狀態，
+         * 後續的狀態驗證可以阻止重複出貨、
+         * 已取消後出貨等操作。
+         */
+        return shipmentRepository
+            .findByIdForUpdate(shipmentId)
+            .orElseThrow(() ->
+                new ResourceNotFoundException(
+                    "找不到 ID 為 "
+                        + shipmentId
+                        + " 的出貨單"
+                )
+            );
+    }
+    
     /**
      * 查詢並驗證啟用中的建立人。
      */

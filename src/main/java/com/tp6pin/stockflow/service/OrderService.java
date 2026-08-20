@@ -851,12 +851,24 @@ public class OrderService {
     }
     
     /**
-     * 取消處理中的訂單所建立的備貨出貨單。
+     * 取消處理中訂單所建立的備貨出貨單。
+     *
+     * cancelOrder() 呼叫此方法前，
+     * 已經先透過 findByIdForUpdate() 鎖定 Order。
+     *
+     * 此處再鎖定 Shipment，使鎖定順序固定為：
+     * Order → Shipment。
      */
     private void cancelPreparingShipment(Long orderId) {
 
+        /*
+         * 第二個悲觀鎖：Shipment。
+         *
+         * 避免取消訂單與實際出貨
+         * 同時修改同一張出貨單。
+         */
         Shipment shipment = shipmentRepository
-            .findByOrder_Id(orderId)
+            .findByOrderIdForUpdate(orderId)
             .orElseThrow(() ->
                 new BusinessException(
                     ErrorCode.DATA_CONFLICT,
@@ -865,10 +877,10 @@ public class OrderService {
             );
 
         /*
-         * PROCESSING 階段的出貨單應該是 PREPARING。
+         * 取得 Shipment 鎖後重新驗證最新狀態。
          *
-         * 如果已經是 SHIPPED，代表商品已實際出庫，
-         * 不可再使用取消訂單流程。
+         * 正常 PROCESSING 訂單對應的出貨單
+         * 應該是 PREPARING。
          */
         if (
             shipment.getStatus()
