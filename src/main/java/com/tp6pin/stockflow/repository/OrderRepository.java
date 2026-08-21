@@ -15,11 +15,16 @@ import com.tp6pin.stockflow.enums.OrderStatus;
 
 import jakarta.persistence.LockModeType;
 
-public interface OrderRepository extends JpaRepository<Order, Long> {
+public interface OrderRepository
+        extends JpaRepository<Order, Long> {
 
-    Optional<Order> findByOrderNumber(String orderNumber);
+    Optional<Order> findByOrderNumber(
+        String orderNumber
+    );
 
-    boolean existsByOrderNumber(String orderNumber);
+    boolean existsByOrderNumber(
+        String orderNumber
+    );
 
     Page<Order> findByStatus(
         OrderStatus status,
@@ -42,7 +47,72 @@ public interface OrderRepository extends JpaRepository<Order, Long> {
         OrderStatus status,
         Pageable pageable
     );
-    
+
+    /**
+     * 訂單分頁及條件查詢。
+     *
+     * 所有查詢條件皆為選填：
+     *
+     * keyword：
+     * 1. 訂單編號
+     * 2. 客戶編號
+     * 3. 客戶公司名稱
+     *
+     * 其他條件：
+     * 1. 客戶 ID
+     * 2. 訂單狀態
+     * 3. 訂單日期起始時間
+     * 4. 訂單日期結束時間
+     */
+    @Query("""
+        SELECT o
+        FROM Order o
+        JOIN o.customer c
+        WHERE (
+            :keyword IS NULL
+            OR LOWER(o.orderNumber)
+                LIKE LOWER(CONCAT('%', :keyword, '%'))
+            OR LOWER(c.customerCode)
+                LIKE LOWER(CONCAT('%', :keyword, '%'))
+            OR LOWER(c.companyName)
+                LIKE LOWER(CONCAT('%', :keyword, '%'))
+        )
+        AND (
+            :customerId IS NULL
+            OR c.id = :customerId
+        )
+        AND (
+            :status IS NULL
+            OR o.status = :status
+        )
+        AND (
+            :startDate IS NULL
+            OR o.orderDate >= :startDate
+        )
+        AND (
+            :endDate IS NULL
+            OR o.orderDate <= :endDate
+        )
+        """)
+    Page<Order> searchOrders(
+        @Param("keyword")
+        String keyword,
+
+        @Param("customerId")
+        Long customerId,
+
+        @Param("status")
+        OrderStatus status,
+
+        @Param("startDate")
+        LocalDateTime startDate,
+
+        @Param("endDate")
+        LocalDateTime endDate,
+
+        Pageable pageable
+    );
+
     /**
      * 鎖定訂單進行狀態變更。
      *
@@ -56,6 +126,7 @@ public interface OrderRepository extends JpaRepository<Order, Long> {
         WHERE o.id = :orderId
         """)
     Optional<Order> findByIdForUpdate(
-        @Param("orderId") Long orderId
+        @Param("orderId")
+        Long orderId
     );
 }

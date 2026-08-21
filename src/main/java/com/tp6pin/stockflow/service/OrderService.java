@@ -9,6 +9,10 @@ import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -17,10 +21,12 @@ import com.tp6pin.stockflow.dto.request.InventoryReservationRequest;
 import com.tp6pin.stockflow.dto.request.OrderCreateRequest;
 import com.tp6pin.stockflow.dto.request.OrderItemCreateRequest;
 import com.tp6pin.stockflow.dto.request.OrderItemUpdateRequest;
+import com.tp6pin.stockflow.dto.request.OrderSearchRequest;
 import com.tp6pin.stockflow.dto.request.OrderUpdateRequest;
 import com.tp6pin.stockflow.dto.response.InventoryReservationBatchResponse;
 import com.tp6pin.stockflow.dto.response.InventoryReservationResponse;
 import com.tp6pin.stockflow.dto.response.OrderResponse;
+import com.tp6pin.stockflow.dto.response.PageResponse;
 import com.tp6pin.stockflow.entity.Customer;
 import com.tp6pin.stockflow.entity.InventoryBatch;
 import com.tp6pin.stockflow.entity.Order;
@@ -162,6 +168,59 @@ public class OrderService {
         return OrderResponse.from(order);
     }
 
+    /**
+     * 訂單分頁及條件查詢。
+     *
+     * 支援條件：
+     * 1. keyword：訂單編號、客戶編號或客戶公司名稱
+     * 2. customerId：客戶 ID
+     * 3. status：訂單狀態
+     * 4. startDate：訂單日期起始時間
+     * 5. endDate：訂單日期結束時間
+     *
+     * 查詢結果依訂單日期及 ID 由新到舊排序。
+     */
+    @Transactional(readOnly = true)
+    public PageResponse<OrderResponse> searchOrders(
+            OrderSearchRequest request
+    ) {
+        /*
+         * 空白關鍵字轉成 null，
+         * 讓 Repository 忽略 keyword 條件。
+         */
+        String normalizedKeyword =
+            normalizeNullableText(request.getKeyword());
+
+        Pageable pageable = PageRequest.of(
+            request.getPage(),
+            request.getSize(),
+            Sort.by(
+                Sort.Order.desc("orderDate"),
+                Sort.Order.desc("id")
+            )
+        );
+
+        Page<Order> orderPage =
+            orderRepository.searchOrders(
+                normalizedKeyword,
+                request.getCustomerId(),
+                request.getStatus(),
+                request.getStartDate(),
+                request.getEndDate(),
+                pageable
+            );
+
+        /*
+         * 在唯讀交易內轉換 Response，
+         * 讓 OrderResponse.from() 可以讀取
+         * 訂單明細及其他延遲載入資料。
+         */
+        Page<OrderResponse> responsePage =
+            orderPage.map(OrderResponse::from);
+
+        return PageResponse.from(responsePage);
+    }
+    
     /**
      * 修改草稿訂單基本資料。
      */

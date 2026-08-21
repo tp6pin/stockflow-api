@@ -5,6 +5,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.ModelAttribute;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -16,9 +17,11 @@ import org.springframework.web.bind.annotation.RestController;
 import com.tp6pin.stockflow.dto.request.OrderCreateRequest;
 import com.tp6pin.stockflow.dto.request.OrderItemCreateRequest;
 import com.tp6pin.stockflow.dto.request.OrderItemUpdateRequest;
+import com.tp6pin.stockflow.dto.request.OrderSearchRequest;
 import com.tp6pin.stockflow.dto.request.OrderUpdateRequest;
 import com.tp6pin.stockflow.dto.response.ApiResponse;
 import com.tp6pin.stockflow.dto.response.OrderResponse;
+import com.tp6pin.stockflow.dto.response.PageResponse;
 import com.tp6pin.stockflow.service.OrderService;
 
 import jakarta.validation.Valid;
@@ -65,6 +68,37 @@ public class OrderController {
             );
     }
 
+    /**
+     * 訂單分頁及條件查詢。
+     *
+     * 支援 Query Parameters：
+     * 1. keyword：訂單編號、客戶編號或客戶公司名稱
+     * 2. customerId：客戶 ID
+     * 3. status：訂單狀態
+     * 4. startDate：訂單日期起始時間
+     * 5. endDate：訂單日期結束時間
+     * 6. page：頁碼，從 0 開始
+     * 7. size：每頁筆數
+     */
+    @GetMapping
+    public ResponseEntity<
+            ApiResponse<PageResponse<OrderResponse>>
+        > searchOrders(
+            @Valid
+            @ModelAttribute
+            OrderSearchRequest request
+    ) {
+        PageResponse<OrderResponse> response =
+            orderService.searchOrders(request);
+
+        return ResponseEntity.ok(
+            ApiResponse.success(
+                "訂單查詢成功",
+                response
+            )
+        );
+    }
+    
     /**
      * 使用 ID 查詢單筆訂單。
      */
