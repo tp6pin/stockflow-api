@@ -9,10 +9,14 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.ModelAttribute;
 
 import com.tp6pin.stockflow.dto.request.ShipmentCreateRequest;
+import com.tp6pin.stockflow.dto.request.ShipmentSearchRequest;
 import com.tp6pin.stockflow.dto.request.ShipmentShipRequest;
 import com.tp6pin.stockflow.dto.response.ApiResponse;
+import com.tp6pin.stockflow.dto.response.PageResponse;
 import com.tp6pin.stockflow.dto.response.ShipmentResponse;
 import com.tp6pin.stockflow.service.ShipmentService;
 
@@ -70,6 +74,37 @@ public class ShipmentController {
                     response
                 )
             );
+    }
+    
+    /**
+     * 出貨單分頁及條件查詢。
+     *
+     * 支援 Query Parameters：
+     * 1. keyword：出貨單號、訂單編號或物流追蹤編號
+     * 2. orderId：訂單 ID
+     * 3. status：出貨狀態
+     * 4. startDate：出貨單建立時間起點
+     * 5. endDate：出貨單建立時間終點
+     * 6. page：頁碼，從 0 開始
+     * 7. size：每頁筆數
+     */
+    @GetMapping
+    public ResponseEntity<
+            ApiResponse<PageResponse<ShipmentResponse>>
+        > searchShipments(
+            @Valid
+            @ModelAttribute
+            ShipmentSearchRequest request
+    ) {
+        PageResponse<ShipmentResponse> response =
+            shipmentService.searchShipments(request);
+
+        return ResponseEntity.ok(
+            ApiResponse.success(
+                "出貨單查詢成功",
+                response
+            )
+        );
     }
     
     /**

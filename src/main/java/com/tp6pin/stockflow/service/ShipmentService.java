@@ -7,11 +7,17 @@ import java.util.UUID;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 
 import com.tp6pin.stockflow.dto.request.InventoryShipmentRequest;
 import com.tp6pin.stockflow.dto.request.ShipmentCreateRequest;
 import com.tp6pin.stockflow.dto.request.ShipmentShipRequest;
 import com.tp6pin.stockflow.dto.response.ShipmentResponse;
+import com.tp6pin.stockflow.dto.request.ShipmentSearchRequest;
+import com.tp6pin.stockflow.dto.response.PageResponse;
 import com.tp6pin.stockflow.entity.Order;
 import com.tp6pin.stockflow.entity.OrderItemAllocation;
 import com.tp6pin.stockflow.entity.Shipment;
@@ -181,6 +187,59 @@ public class ShipmentService {
         return ShipmentResponse.from(savedShipment);
     }
 
+    /**
+     * 出貨單分頁及條件查詢。
+     *
+     * 支援條件：
+     * 1. keyword：出貨單號、訂單編號或物流追蹤編號
+     * 2. orderId：訂單 ID
+     * 3. status：出貨狀態
+     * 4. startDate：出貨單建立時間起點
+     * 5. endDate：出貨單建立時間終點
+     *
+     * 查詢結果依建立時間及 ID 由新到舊排序。
+     */
+    @Transactional(readOnly = true)
+    public PageResponse<ShipmentResponse> searchShipments(
+            ShipmentSearchRequest request
+    ) {
+        /*
+         * 空白關鍵字轉成 null，
+         * 讓 Repository 忽略 keyword 條件。
+         */
+        String normalizedKeyword =
+            normalizeNullableText(request.getKeyword());
+
+        Pageable pageable = PageRequest.of(
+            request.getPage(),
+            request.getSize(),
+            Sort.by(
+                Sort.Order.desc("createdAt"),
+                Sort.Order.desc("id")
+            )
+        );
+
+        Page<Shipment> shipmentPage =
+            shipmentRepository.searchShipments(
+                normalizedKeyword,
+                request.getOrderId(),
+                request.getStatus(),
+                request.getStartDate(),
+                request.getEndDate(),
+                pageable
+            );
+
+        /*
+         * 在唯讀交易內完成 Response 轉換，
+         * 確保 ShipmentResponse.from()
+         * 可以讀取訂單、出貨明細等延遲載入資料。
+         */
+        Page<ShipmentResponse> responsePage =
+            shipmentPage.map(ShipmentResponse::from);
+
+        return PageResponse.from(responsePage);
+    }
+    
     /**
      * 執行實際出貨。
      *

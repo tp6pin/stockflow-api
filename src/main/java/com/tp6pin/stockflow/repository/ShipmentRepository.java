@@ -1,5 +1,6 @@
 package com.tp6pin.stockflow.repository;
 
+import java.time.LocalDateTime;
 import java.util.Optional;
 
 import org.springframework.data.domain.Page;
@@ -43,6 +44,71 @@ public interface ShipmentRepository
 
     Page<Shipment> findByStatus(
         ShipmentStatus status,
+        Pageable pageable
+    );
+
+    /**
+     * 出貨單分頁及條件查詢。
+     *
+     * 所有查詢條件皆為選填：
+     *
+     * keyword：
+     * 1. 出貨單號
+     * 2. 訂單編號
+     * 3. 物流追蹤編號
+     *
+     * 其他條件：
+     * 1. 訂單 ID
+     * 2. 出貨狀態
+     * 3. 出貨單建立時間起點
+     * 4. 出貨單建立時間終點
+     */
+    @Query("""
+        SELECT s
+        FROM Shipment s
+        JOIN s.order o
+        WHERE (
+            :keyword IS NULL
+            OR LOWER(s.shipmentNumber)
+                LIKE LOWER(CONCAT('%', :keyword, '%'))
+            OR LOWER(o.orderNumber)
+                LIKE LOWER(CONCAT('%', :keyword, '%'))
+            OR LOWER(s.trackingNumber)
+                LIKE LOWER(CONCAT('%', :keyword, '%'))
+        )
+        AND (
+            :orderId IS NULL
+            OR o.id = :orderId
+        )
+        AND (
+            :status IS NULL
+            OR s.status = :status
+        )
+        AND (
+            :startDate IS NULL
+            OR s.createdAt >= :startDate
+        )
+        AND (
+            :endDate IS NULL
+            OR s.createdAt <= :endDate
+        )
+        """)
+    Page<Shipment> searchShipments(
+        @Param("keyword")
+        String keyword,
+
+        @Param("orderId")
+        Long orderId,
+
+        @Param("status")
+        ShipmentStatus status,
+
+        @Param("startDate")
+        LocalDateTime startDate,
+
+        @Param("endDate")
+        LocalDateTime endDate,
+
         Pageable pageable
     );
 
