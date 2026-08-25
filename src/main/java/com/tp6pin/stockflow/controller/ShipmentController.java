@@ -108,6 +108,28 @@ public class ShipmentController {
     }
     
     /**
+     * 使用 ID 查詢單筆出貨單。
+     */
+    @GetMapping("/{id}")
+    public ResponseEntity<ApiResponse<ShipmentResponse>>
+            getShipmentById(
+                @PathVariable("id")
+                @Positive(message = "出貨單 ID 必須大於 0")
+                Long id
+            ) {
+
+        ShipmentResponse response =
+            shipmentService.getShipmentById(id);
+
+        return ResponseEntity.ok(
+            ApiResponse.success(
+                "出貨單查詢成功",
+                response
+            )
+        );
+    }
+    
+    /**
      * 執行實際出貨。
      *
      * 執行成功後：

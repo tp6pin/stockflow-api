@@ -241,6 +241,31 @@ public class ShipmentService {
     }
     
     /**
+     * 使用 ID 查詢單筆出貨單。
+     */
+    @Transactional(readOnly = true)
+    public ShipmentResponse getShipmentById(
+            Long shipmentId
+    ) {
+        Shipment shipment =
+            shipmentRepository.findById(shipmentId)
+                .orElseThrow(() ->
+                    new ResourceNotFoundException(
+                        "找不到 ID 為 "
+                            + shipmentId
+                            + " 的出貨單"
+                    )
+                );
+
+        /*
+         * 在唯讀交易內轉換 Response，
+         * 確保可以讀取訂單及出貨明細等
+         * 延遲載入資料。
+         */
+        return ShipmentResponse.from(shipment);
+    }
+    
+    /**
      * 執行實際出貨。
      *
      * 流程：
